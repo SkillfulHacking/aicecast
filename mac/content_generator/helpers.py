@@ -73,6 +73,109 @@ def clean_claude_output(text: str, *, strip_quotes: bool = True) -> str:
     return cleaned
 
 
+def _run_claude_cli(
+    prompt: str,
+    *,
+    timeout: int,
+    model: str | None,
+) -> str | None:
+    """Invoke the Claude CLI (``claude -p``) and return raw stdout."""
+    args = ["claude", "-p", prompt]
+    if model:
+        args.extend(["--model", model])
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log("Claude timed out")
+        return None
+    except Exception as exc:
+        log(f"Claude error: {exc}")
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout
+
+
+def _run_openai_api(
+    prompt: str,
+    *,
+    timeout: int,
+    model: str | None,
+) -> str | None:
+    """Call the OpenAI Chat Completions API and return the assistant message."""
+    import httpx
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        log("OPENAI_API_KEY is not set; cannot use openai backend")
+        return None
+
+    resolved_model = model or os.environ.get("WRIT_OPENAI_MODEL", "gpt-4o")
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": resolved_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception as exc:
+        log(f"OpenAI error: {exc}")
+        return None
+
+
+def _run_codex_cli(
+    prompt: str,
+    *,
+    timeout: int,
+    model: str | None,
+) -> str | None:
+    """Invoke the OpenAI Codex CLI and return its stdout.
+
+    Codex CLI is designed for agentic coding tasks; for plain text generation
+    the ``openai`` backend (OpenAI Chat Completions API) is generally a better
+    fit.  This backend is provided for parity so that a single ``WRIT_AI_BACKEND``
+    value works across both the operator and the content generators.
+    """
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        log("codex CLI not found; install with: npm install -g @openai/codex")
+        return None
+
+    args = [codex_bin, "--approval-mode", "full-auto", "--quiet"]
+    if model:
+        args.extend(["--model", model])
+    args.append(prompt)
+
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log("Codex timed out")
+        return None
+    except Exception as exc:
+        log(f"Codex error: {exc}")
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout
+
+
+# Map backend name → callable (prompt, *, timeout, model) -> str | None
+_AI_BACKENDS: dict[str, object] = {
+    "claude": _run_claude_cli,
+    "openai": _run_openai_api,
+    "codex": _run_codex_cli,
+}
+
+
 def run_claude(
     prompt: str,
     *,
@@ -81,28 +184,27 @@ def run_claude(
     min_length: int = 0,
     strip_quotes: bool = True,
 ) -> str | None:
-    args = ["claude", "-p", prompt]
-    if model:
-        args.extend(["--model", model])
+    """Generate text from a prompt using the configured AI backend.
 
-    try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        log("Claude timed out")
-        return None
-    except Exception as exc:
-        log(f"Claude error: {exc}")
+    The backend is selected by the ``WRIT_AI_BACKEND`` environment variable:
+
+    * ``claude`` (default) – Claude CLI (``claude -p``).
+    * ``openai`` – OpenAI Chat Completions API (requires ``OPENAI_API_KEY``).
+      Model defaults to ``gpt-4o``; override with ``WRIT_OPENAI_MODEL``.
+    * ``codex`` – OpenAI Codex CLI (``codex``).
+      Model override via ``--model`` flag when ``WRIT_OPENAI_MODEL`` is set.
+    """
+    backend_name = os.environ.get("WRIT_AI_BACKEND", "claude").lower()
+    backend_fn = _AI_BACKENDS.get(backend_name)
+    if backend_fn is None:
+        log(f"Unknown WRIT_AI_BACKEND '{backend_name}'; falling back to claude")
+        backend_fn = _AI_BACKENDS["claude"]
+
+    raw = backend_fn(prompt, timeout=timeout, model=model)  # type: ignore[call-arg]
+    if not raw or not raw.strip():
         return None
 
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-
-    script = clean_claude_output(result.stdout, strip_quotes=strip_quotes)
+    script = clean_claude_output(raw, strip_quotes=strip_quotes)
     if len(script) <= min_length:
         return None
     return script

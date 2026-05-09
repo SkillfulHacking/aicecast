@@ -47,12 +47,39 @@ echo | tee -a "$SESSION_LOG"
 echo "## operator session $(date '+%Y-%m-%d %H:%M:%S %Z')" | tee -a "$SESSION_LOG"
 
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
-CLAUDE_CMD=(claude -p "$PROMPT" --allowedTools "Bash,Read,Write,Edit,Glob,Grep")
-if [ -n "$TIMEOUT_BIN" ]; then
-    CLAUDE_CMD=("$TIMEOUT_BIN" "$CLAUDE_TIMEOUT_SECONDS" "${CLAUDE_CMD[@]}")
+
+# Select AI backend.  WRIT_AI_BACKEND can be: claude (default), codex, openai.
+# "openai" is for the content generators only; the operator needs an agentic
+# CLI with tool access, so "openai" falls back to claude here.
+AI_BACKEND="${WRIT_AI_BACKEND:-claude}"
+
+case "$AI_BACKEND" in
+    codex)
+        CODEX_BIN="$(command -v codex || true)"
+        if [ -z "$CODEX_BIN" ]; then
+            echo "[operator] codex CLI not found (install: npm install -g @openai/codex); falling back to claude" | tee -a "$SESSION_LOG"
+            AI_BACKEND="claude"
+        fi
+        ;;
+    openai)
+        echo "[operator] 'openai' backend does not support agentic tool use; falling back to claude" | tee -a "$SESSION_LOG"
+        AI_BACKEND="claude"
+        ;;
+esac
+
+if [ "$AI_BACKEND" = "codex" ]; then
+    OPERATOR_CMD=("$CODEX_BIN" --approval-mode full-auto "$PROMPT")
+else
+    OPERATOR_CMD=(claude -p "$PROMPT" --allowedTools "Bash,Read,Write,Edit,Glob,Grep")
 fi
 
-"${CLAUDE_CMD[@]}" \
+if [ -n "$TIMEOUT_BIN" ]; then
+    OPERATOR_CMD=("$TIMEOUT_BIN" "$CLAUDE_TIMEOUT_SECONDS" "${OPERATOR_CMD[@]}")
+fi
+
+echo "[operator] backend=$AI_BACKEND" | tee -a "$SESSION_LOG"
+
+"${OPERATOR_CMD[@]}" \
     > >(tee -a "$SESSION_LOG") \
     2> >(tee -a "$SESSION_LOG" >&2) &
 CLAUDE_PID=$!

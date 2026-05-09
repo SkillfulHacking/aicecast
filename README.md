@@ -198,6 +198,43 @@ The listener daemon polls for new messages every 30 seconds and generates spoken
 
 **Use different TTS voices** — Kokoro includes 28 voices (see `mac/kokoro/tts.py`). Assign voices per-show in `config/schedule.yaml`.
 
+### Choosing an AI backend
+
+Set `WRIT_AI_BACKEND` to control which AI is used for script generation:
+
+| Value | Description |
+|-------|-------------|
+| `claude` | **Default.** Claude CLI (`claude -p`). Requires Claude CLI to be installed and authenticated. |
+| `openai` | OpenAI Chat Completions API. Requires `OPENAI_API_KEY`. Model defaults to `gpt-4o`; override with `WRIT_OPENAI_MODEL`. |
+| `codex` | OpenAI Codex CLI (`codex`). Requires [`@openai/codex`](https://github.com/openai/codex) to be installed (`npm install -g @openai/codex`) and `OPENAI_API_KEY` to be set. |
+
+#### Content generators (`talk_generator`, `listener_response_generator`, …)
+
+```bash
+# Use OpenAI API for script generation
+export WRIT_AI_BACKEND=openai
+export OPENAI_API_KEY=sk-...
+export WRIT_OPENAI_MODEL=gpt-4o   # optional, default: gpt-4o
+
+./writ generate talk
+
+# Use Codex CLI for script generation
+export WRIT_AI_BACKEND=codex
+export OPENAI_API_KEY=sk-...
+./writ generate talk
+```
+
+#### Operator loop (`run_operator.sh`)
+
+The operator needs an **agentic** CLI with tool access. Only `claude` and `codex` are supported here (`openai` logs a warning and falls back to Claude):
+
+```bash
+# Run operator with Codex CLI (full-auto mode)
+export WRIT_AI_BACKEND=codex
+export OPENAI_API_KEY=sk-...
+./run_operator.sh
+```
+
 **Add music styles** — Edit `mac/content_generator/music_pools_expanded.py` to change the AI music generation prompts per show.
 
 ## Files
@@ -242,7 +279,10 @@ The listener daemon polls for new messages every 30 seconds and generates spoken
 - Python 3.11+
 - ffmpeg, ezstream, vorbis-tools
 - Icecast2
-- Claude CLI (for script generation and operator loop)
+- **AI backend** (at least one):
+  - Claude CLI — for script generation and operator loop (`claude` backend)
+  - OpenAI API key — for script generation via Chat Completions (`openai` backend) or Codex CLI (`codex` backend)
+  - [Codex CLI](https://github.com/openai/codex) (`npm install -g @openai/codex`) — for agentic operator loop with `WRIT_AI_BACKEND=codex`
 - Kokoro TTS (~200MB model)
 - music-gen.server + ACE-Step (optional, for AI music bumpers)
 - cloudflared (optional, for public tunnel)
